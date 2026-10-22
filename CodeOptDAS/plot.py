@@ -7,8 +7,45 @@ import pprint
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import torch
+"""
+Pltot f-k (frequency-wavenumber) transform of DAS strain-rate 
+    Plot the f-k amplitude spectrum in dB (relative to its maximum).
 
+    velocities : optional list of apparent velocities [m/s]; draws the lines f = c*k
+"""
+def plot_fk(fk, f, k, fmax=None, kmax=None, dyn_range_db=60, velocities=None,
+            cmap="turbo", ax=None, title = None):
+    amp = fk.abs()
+    amp_db = 20 * torch.log10(amp / amp.max() + 1e-12)
+    amp_db = amp_db.cpu().numpy()
+    f_np, k_np = f.cpu().numpy(), k.cpu().numpy()
 
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 8))
+    im = ax.imshow(
+        amp_db, origin="lower", aspect="auto", cmap=cmap,
+        extent=[k_np[0], k_np[-1], f_np[0], f_np[-1]],
+        vmin=-dyn_range_db, vmax=0,
+    )
+    if velocities is not None:
+        kk = np.array([k_np[0], k_np[-1]])
+        for c in velocities:
+            ax.plot(kk, c * kk, "w--", lw=0.8)
+            ax.text(0.02 * k_np[-1], c * 0.02 * k_np[-1], f"{c:g} m/s",
+                    color="w", fontsize=8, va="bottom")
+
+    ax.set_xlim(-kmax if kmax else k_np[0], kmax if kmax else k_np[-1])
+    ax.set_ylim(0, fmax if fmax else f_np[-1])
+    ax.set_xlabel("Wavenumber k (cycles/m)")
+    ax.set_ylabel("Frequency f (Hz)")
+    ax.set_title(title)
+    plt.colorbar(im, ax=ax, label="Amplitude (dB)")
+    plt.tight_layout()
+#    plt.savefig("fk_spectrum.png", dpi=150)
+#    return ax
+    plt.show(block=True)
+# -------------- End of function   ----------------------------
 #+────────────────────────────────── pltpGram ─────────────────────────────────────────────+
 """Plot periodogram
 
@@ -113,58 +150,113 @@ def pltFO(data):
 A time series plotting script
     Parameters
     ----------
-    strRate: Numpy matrix(n_times, n_cha)
-
-    t:       Time vector
-    mData.get('dt'): temporal sampling
-    Returns
-    -------
-    :
+    strain_rate : ndarray [nt, nx]
+        Strain-rate data.
+    x : ndarray [nx]
+        Distance along fiber (m).
+    z : ndarray [nx]
+        Bathymetry (m).
+    t : ndarray [nt]
+        Time vector.
+    mData : dict
+        Metadata dictionary containing:
+            gaugeLength
+            dx
+    title : str
+        Figure title.
 """
-def plotTS(strain_rate, x, t, mData, title = 'Strain rate'):
-#
-#--- Local function to plot the DAS data: data = [nt, nx]
-     def show_data(data, das_time, pclip=99.5, label='∂ε/∂t'):
-         fig, ax1 = plt.subplots(figsize=(20,10))
-         clipVal = np.percentile(np.absolute(data), pclip)
-         im = ax1.imshow(data.T, 
-                     extent=[x[0], x[-1], t[-1], t[0]],          #0, data.shape[0]
-                     aspect='auto', vmin=-clipVal, vmax=clipVal, cmap=plt.get_cmap('seismic'))
-#
-         ax1.set_xlabel("Distance (m)")
-         ax1.set_ylabel("Time [s]")
 
-         ax1.grid()
-         divider = make_axes_locatable(ax1)
-         cax = divider.append_axes("right", size="2%", pad=0.7)
-         cbar = plt.colorbar(im, orientation="vertical", cax=cax)
-         cbar.set_label(label)
-         return fig, ax1
-#
-#--- Strain rate
-     step = int(mData['gaugeLength'] / mData['dx'])
-     fig, ax2 = show_data(strain_rate[:, ::step], t, pclip=99, label="nStrain rate [1/s]")
-     ax2.set_title('Strain rate')
-     ax2.set_ylim(t[-1], t[0])
-     ax2.set_title(title)
-#     ax2.plot(ch_list,P_phase_time_taup,"r--",lw=4,label="P-wave")
-#     ax2.plot(ch_list,S_phase_time_taup,"c--",lw=4,label="S-wave")
-#     ax2.legend()
-#
-#--- Time series
-     """fig, ax = plt.subplots(figsize=(20, 12))
-     gain=1.        # 1.5e-1
-     for ii in range(len(x)):
-         ax.plot(t, strain_rate[:, ::step*10]*gain + ii, "k-", linewidth=2.0)
-#
-     ax.set_ylim(x[0], x[-1])
-     ax.set_xlim(t[0], t[-1])
-     ax.set_xlabel('Time (s)')
-     ax.set_ylabel('Distance (m)')
-     ax.set_title('Strain rate')
-     ax.grid()
+def plotTS(strain_rate, x, z, t, mData, title='Strain rate'):
+     # DAS decimation according to gauge length
+     step = max(1, int(mData['gaugeLength'] / mData['dx']))
+
+     x_plot = x[::step]
+     z_plot = z[::step]
+     data_plot = strain_rate[:, ::step]
+
+     # ------------------------------------------------------------------
+     # Create figure with two panels
+     # ------------------------------------------------------------------
+     fig, (ax_bathy, ax_das) = plt.subplots(
+        2, 1,
+        figsize=(20, 10),
+        sharex=True,
+        gridspec_kw={
+            'height_ratios': [1, 7],    #1, 5
+            'hspace': 0.05
+        }
+     )
+
+     # ------------------------------------------------------------------
+     # Bathymetry
+     # ------------------------------------------------------------------
+     ax_bathy.plot(x_plot, z_plot, 'k', lw=1.5)
+
+     """ax_bathy.fill_between(
+        x_plot,
+        z_plot,
+        np.nanmin(z_plot),
+        color='lightgray',
+        alpha=0.7
+     )
      """
+     ax_bathy.set_ylabel('Depth (m)')
+
+     # invert bathymetry axis
+#     ax_bathy.invert_yaxis()
+
+     ax_bathy.grid(alpha=0.3)
+
+     # cleaner appearance
+     ax_bathy.tick_params(axis='x', labelbottom=False)
+     ax_bathy.spines['right'].set_visible(True)
+     ax_bathy.spines['top'].set_visible(True)
+
+     # ------------------------------------------------------------------
+     # DAS image
+     # ------------------------------------------------------------------
+     clipVal = np.percentile(np.abs(data_plot), 99)
+
+     im = ax_das.imshow(
+        data_plot.T,
+        extent=[x_plot[0], x_plot[-1], t[-1], t[0]],
+        aspect='auto',
+        cmap='seismic',
+        vmin=-clipVal,
+        vmax=clipVal
+     )
+
+     ax_das.set_xlabel('Distance (m)')
+     ax_das.set_ylabel('Time (s)')
+#     ax_das.set_title(title)
+
+     ax_das.grid(alpha=0.2)
+
+     # ------------------------------------------------------------------
+     # Colorbar
+     # ------------------------------------------------------------------
+     divider = make_axes_locatable(ax_das)
+     cax = divider.append_axes("right", size="2%", pad=0.1)
+
+     cbar = plt.colorbar(im, cax=cax)
+     cbar.set_label(title)
+
+     # after plotting everything
+     ax_bathy.set_xlim(ax_das.get_xlim())
+
+     """cbar = fig.colorbar(
+         im,
+         ax=[ax_bathy, ax_das],
+         pad=0.02,
+         aspect=30
+     )
+     """
+
+     fig.tight_layout()
+
      plt.show(block=True)
+
+
 # -------------- plotTxCor ----------------------------
 """
 A X-cor plotting script
@@ -178,7 +270,7 @@ A X-cor plotting script
     -------
     :
 """
-def plotTxCor(strain_rate, cc, max_lag_npts, y, dt, srcD, title=None):
+def plotTxCor(strain_rate, cc, max_lag_npts, y, dt, srcD, z, title=None):
      fig, ax = plt.subplots(figsize=(15, 10))
      t = np.arange(-max_lag_npts, max_lag_npts+1) * dt
      nch = strain_rate.shape[0]
@@ -196,6 +288,40 @@ def plotTxCor(strain_rate, cc, max_lag_npts, y, dt, srcD, title=None):
      ax.set_xlabel('Time lag (s)')
      ax.set_ylabel('Distance (m)')
      ax.set_title(title)
+     
+     # Add a second vertical axis on the right displaying depth 'z' alongside distance 'y'
+     ax2 = ax.twinx()
+     ax2.set_ylim(y[0], y[-1])
+     
+     # Map the y ticks to their corresponding z depth values
+     y_ticks = ax.get_yticks()
+     # Filter ticks to keep them within the actual y range
+     y_ticks = y_ticks[(y_ticks >= y[0]) & (y_ticks <= y[-1])]
+     ax2.set_yticks(y_ticks)
+     
+     # Interpolate z values at the tick positions
+     z_ticks = np.interp(y_ticks, y, z)
+     ax2.set_yticklabels([f"{val:.1f}" for val in z_ticks])
+     ax2.set_ylabel('Depth (m)')
+     
      plt.tight_layout()
 #     plt.show()
      plt.show(block=True)
+
+# -------------- plotTxCor ----------------------------
+"""
+Plot linear bathimetry along FO
+"""
+def pltFOdepth(s, z):
+    plt.figure(figsize=(8,6))
+    # Cubic fit
+    plt.plot(s/1000., z, 'r', linewidth=2)
+
+    plt.xlabel('Distance along FO (km)')
+    plt.ylabel('Depth (m)')
+    plt.title('Linear bathimetry (R2=91.8%)')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.show(block=True)

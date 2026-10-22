@@ -37,6 +37,7 @@ rad/m , rad/s   , rad/(s*m)
 #---------- Read file / Load data
 data, mData = u.chFil()
 #------------ Create time/distance vectors and data limits
+# Data is spatially best over the first ~10 km (krauss2026distributed).
 #--- Distance and wavenumber
 x  = np.arange(data.shape[1]) * mData.get('dx') # Dist. vector mData.get('dimensionSizes')
 X  = (x.size - 1) * mData.get('dx')                                    # Total dist.
@@ -68,6 +69,9 @@ else:
 x  = x[mask]                                                     # Distance vector for dx
 X  = (x.size - 1) * mData.get('dx')                              # Total length of FO
 print(f">> Total length of the FO is {X / 1000.:.2f}km.")
+#--- Depth along FO
+z = u.depth(x)
+# p.pltFOdepth(x, z)
 kN = .9 / (2. * mData.get('dx'))                                 # 90% Wav. number Nyquist
 k0 = 1. / (2. * X)                                               # Lowest wav. number
 #--- Shorten dataset accordingly
@@ -146,10 +150,10 @@ print(f"    1) ΔT={T:.4f}s → Δf=[{f0:.4f}, {fN:.3f}]Hz (default).")
 print(f"    2) Ambient frequency ranges:")
 a = max(0.01, f0); b = fN
 print(f"    2.1) Earthquakes & distant storms                → f=[{a:.2f} {b:.2f}]Hz")
-a = max(0.04, f0); b = min(0.1, b)
+a = max(0.04, f0); b = min(0.1, fN)
 print(f"    2.2) Microseismics (primary & secondary; swell?")
 print(f"         Gravity/infragravity waves                  → f=[{a:.2f} {b:.2f}]Hz")
-a = max(1, f0); b = min(10, b)
+a = max(1, f0); b = min(10, fN)
 print(f"    2.3) T-phase                                     → f=[{a:.2f} {b:.2f}]Hz")
 print(f"    2.4) Off range: whale & ships                    → f=[10 25] | [35 85]Hz")
 #--- Split by comma or space and filter out empty strings
@@ -180,6 +184,8 @@ Measurements are recorded at every channel with spatial sampling interval dx ave
 """
 strRateGl, xGl = u.resDAS(strRate, x, mData["gaugeLength"], 80)
 #           └──> Gauge length positions
+#--- Linear bathimetry
+zGl = u.depth(xGl)
 #--- Strain along FO
 #strainRes, _     = u.resDAS(strain,  x, mData["gaugeLength"], 80)
 #+───────────────────────── Spatially resampling of strain rate to Gl ──────────────────────────────────────+
@@ -187,8 +193,16 @@ strRateGl, xGl = u.resDAS(strRate, x, mData["gaugeLength"], 80)
 #p.splot(strain, strRate, t, mData, vm=2e-6, xdec=8, tdec=1, chn=100)
 print(f"\n>> {data.shape} raw phase → {strRate.shape} ∂ε/∂t → Gl → {strRateGl.shape}.")
 #
-p.plotTS(strRate, xGl, t, mData, title = '∂ε(dx)/∂t')
-p.plotTS(strRateGl, xGl, t, mData, title = '∂ε(Gl)/∂t')
+p.plotTS(strRate, xGl, zGl, t, mData, title = '∂ε(dx)/∂t')
+p.plotTS(strRateGl, xGl, zGl, t, mData, title = '∂ε(Gl)/∂t')
+#+───────────────────────── f-k transform of DAS strain-rate ──────────────────────────────────────+
+fk, f, k = u.fkTrm(strRate, t, x, taper=0.1)
+kmax = 1. / x[1]              #avoid inf
+p.plot_fk(fk, f, k, fmax=f1, kmax=kmax, velocities=[20, 1500], title = 'f-k ∂ε(dx)/∂t')
+
+fk, f, k = u.fkTrm(strRateGl, t, xGl, taper=0.1)
+kmax = 1. / xGl[0]
+p.plot_fk(fk, f, k, fmax=f1, kmax=kmax, velocities=[20, 1500], title = 'f-k ∂ε(Gl)/∂t')
 #+───────────────────────── Strain PSD ──────────────────────────────────────+
 n_fft=256; hop_length=64; win_length = 256; dummy = 1./mData.get('dt')
 #---------- Choose channel
@@ -255,5 +269,4 @@ while True:
               ]
      dummy = dummy[0] if (white & bit) else (dummy[1] if white else dummy[2])
      cc = u.computeCC(strRateGl, mData["dt"], max_lag, isource=idxsource, whitening=white, one_bit=bit)
-     p.plotTxCor(strRateGl, cc, max_lag_npts, x, mData["dt"], x[idxsource], title=dummy)
-
+     p.plotTxCor(strRateGl, cc, max_lag_npts, x, mData["dt"], x[idxsource], z, title=dummy)

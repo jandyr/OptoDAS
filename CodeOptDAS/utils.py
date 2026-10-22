@@ -25,6 +25,76 @@ Script          Description
 #\_____________________________________/
 #
 #\__________Scripts __________/
+#+────────────────────────────────── fkTrm ─────────────────────────────────────────────+
+"""
+f-k (frequency-wavenumber) transform of DAS strain-rate data using PyTorch.
+
+    Parameters
+    ----------
+    taper    : fraction of each axis tapered with a Tukey window (0 = no taper)
+    pad_pow2 : zero-pad both axes to the next power of two (faster FFT, smoother spectrum)
+    device   : 'cuda', 'cpu', ... (default: cuda if available)
+
+Input
+-----
+data : np.ndarray, shape (ntime, ndistance)   strain rate
+t    : np.ndarray, shape (ntime,)             time vector [s]
+x    : np.ndarray, shape (ndistance,)         distance along the fiber [m]
+
+    Returns
+    -------
+    fk : torch.Tensor (complex), shape (nf, nk)  -- f along dim 0, k along dim 1
+    f  : torch.Tensor, shape (nf,)   frequency [Hz],  f >= 0
+    k  : torch.Tensor, shape (nk,)   wavenumber [cycles/m], increasing (centered on 0)
+
+Convention
+----------
+Waves of the form cos(k*x - w*t) (propagating toward +x) appear at
+f > 0, k > 0. Only f >= 0 is returned, since the input is real.
+k is in cycles/m (multiply by 2*pi for rad/m).
+"""
+def fkTrm(data, t, x, taper=0.1, pad_pow2=True, device=None, dtype=torch.float32):
+    """Local function
+    """
+    def _tukey(n, alpha, device, dtype):
+        """Tukey (tapered cosine) window; alpha = fraction of the window that is tapered."""
+        w = torch.ones(n, device=device, dtype=dtype)
+        width = int(alpha * (n - 1) / 2)
+        if width > 0:
+            ramp = 0.5 * (1 - torch.cos(torch.pi * torch.arange(width, device=device, dtype=dtype) / width))
+            w[:width] = ramp
+            w[-width:] = ramp.flip(0)
+        return w
+#+──────────────── main ────────────────────+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dt = float(np.median(np.diff(t)))
+    dx = float(np.median(np.diff(x)))
+
+    d = torch.as_tensor(np.ascontiguousarray(data), dtype=dtype, device=device)
+    nt, nx = d.shape
+
+    # Pre-processing: remove the mean of each channel, then taper both axes
+    d = d - d.mean(dim=0, keepdim=True)
+    if taper > 0:
+        d = d * _tukey(nt, taper, device, dtype)[:, None]
+        d = d * _tukey(nx, taper, device, dtype)[None, :]
+
+    nfft_t = 1 << (nt - 1).bit_length() if pad_pow2 else nt
+    nfft_x = 1 << (nx - 1).bit_length() if pad_pow2 else nx
+
+    # Time axis: real FFT (keeps f >= 0 only).
+    S = torch.fft.rfft(d, n=nfft_t, dim=0)
+    # Space axis: kernel exp(+i 2 pi k x) (unnormalised inverse FFT) so that
+    # +x propagating waves map to k > 0 when f > 0.
+    S = torch.fft.ifft(S, n=nfft_x, dim=1, norm="forward")
+    S = torch.fft.fftshift(S, dim=1)  # put k = 0 in the middle
+
+    # Scale as an approximation of the continuous Fourier transform
+    S = S * (dt * dx)
+
+    f = torch.fft.rfftfreq(nfft_t, d=dt).to(device)
+    k = torch.fft.fftshift(torch.fft.fftfreq(nfft_x, d=dx)).to(device)
+    return S, f, k
 #+────────────────────────────────── zPhBpass ─────────────────────────────────────────────+
 """
 Detects and interpolates bad DAS channels based on RMS energy. Uses conversions
@@ -546,6 +616,12 @@ def hdf5_item(name, obj):
             print("    Attributes:")
 # -------------- End of function   ----------------------------
 #+──────────────────────────── Lambda Funcitions ────────────────────────────────────────+
+#---------- Function to estimate depth for the first 1514m.
+# Regression estimated with rdPosFO.py. Uses the 1st 3 FO points, which have the best linear fit.
+# The regression coeff is R2 = 91.8%.
+depth = lambda x: -0.008907*x - 4.094
+# -------------- End of function   ----------------------------
+#
 #---------- Function to strip off path, folder and filename
 S = lambda s: int(s[s.rfind('_') + 1 : s.rfind('.hdf5')])
 #   └─> Extract time from filename, e.g., UW_DAS_south_8Hz_20260106_000024.hdf5
